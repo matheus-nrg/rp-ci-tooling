@@ -11,7 +11,22 @@ fi
 if jq -se 'length == 1 and (.[0] | type) == "object"' <<< "$MESSAGE" > /dev/null 2>&1; then
   payload="$MESSAGE"
 else
-  payload=$(jq -n --arg text "$MESSAGE" '{text: $text}')
+  # Adaptive Card, not {"text": ...}: Teams Workflows webhooks accept the plain
+  # text shape with a 202 and then drop it, so nothing reaches the channel and
+  # nothing fails. The card envelope is what both Workflows and the legacy
+  # Incoming Webhook connector render.
+  payload=$(jq -n --arg text "$MESSAGE" '{
+    type: "message",
+    attachments: [{
+      contentType: "application/vnd.microsoft.card.adaptive",
+      content: {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        type: "AdaptiveCard",
+        version: "1.4",
+        body: [{type: "TextBlock", text: $text, wrap: true}]
+      }
+    }]
+  }')
 fi
 
 curl -sSf --max-time 30 -X POST "$WEBHOOK_URL" \
