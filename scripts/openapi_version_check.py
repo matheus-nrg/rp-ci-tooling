@@ -20,6 +20,11 @@ When running inside GitHub Actions, writes these step outputs to GITHUB_OUTPUT:
   has_breaking  - "true" / "false"
   is_major_bump - "true" when breaking changes are present and route-level
                   major version paths were introduced
+  route_summary - "<old route> -> <new route>, ..." for each affected route, set
+                  only when is_major_bump is "true"
+  breaking_details - multiline list of oasdiff's breaking changes grouped into
+                  removed endpoints, removed fields, changed request shapes and
+                  other, set whenever has_breaking is "true"
 
 Usage:
     python3 openapi_version_check.py <baseline-spec> <current-spec>
@@ -32,9 +37,24 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 _VERSION_SEGMENT = re.compile(r"/v(\d+)(?=/|$)")
+
+_REMOVED_ENDPOINT_IDS = {
+    "api-path-removed-without-deprecation",
+    "api-path-removed-before-sunset",
+    "api-removed-without-deprecation",
+    "api-removed-before-sunset",
+}
+_REMOVED_FIELD_IDS = {
+    "response-required-property-removed",
+    "response-optional-property-removed",
+    "required-response-header-removed",
+    "optional-response-header-removed",
+}
+_REQUEST_SHAPE_ID_PREFIXES = ("request-", "new-request-", "new-required-request-")
 
 
 def versioned_route_key(path_key: str) -> tuple[str, int] | None:
@@ -66,14 +86,17 @@ def route_versions(spec: dict) -> dict[str, set[int]]:
     return routes
 
 
+def _load_changes(breaking_json: str) -> list[dict]:
+    try:
+        return json.loads(breaking_json or "[]")
+    except json.JSONDecodeError:
+        return []
+
+
 def breaking_change_routes(breaking_json: str) -> set[str]:
     """Extract normalized route keys from oasdiff breaking --format json output."""
-    try:
-        changes = json.loads(breaking_json or "[]")
-    except json.JSONDecodeError:
-        return set()
     routes: set[str] = set()
-    for change in changes:
+    for change in _load_changes(breaking_json):
         path = change.get("path", "")
         route = versioned_route_key(path)
         if route:
@@ -82,13 +105,53 @@ def breaking_change_routes(breaking_json: str) -> set[str]:
     return routes
 
 
+def breaking_change_details(breaking_json: str) -> str:
+    """Group oasdiff breaking changes into a markdown list per category.
+
+    oasdiff has no rename check: a renamed property is reported as the old name
+    removed (the new name is a non-breaking addition), so renames can only show
+    up under removed fields.
+    """
+    removed_endpoints: list[str] = []
+    removed_fields: list[str] = []
+    request_shapes: list[str] = []
+    other: list[str] = []
+    for change in _load_changes(breaking_json):
+        change_id = change.get("id", "")
+        if change_id in _REMOVED_ENDPOINT_IDS:
+            bucket = removed_endpoints
+        elif change_id in _REMOVED_FIELD_IDS:
+            bucket = removed_fields
+        elif change_id.startswith(_REQUEST_SHAPE_ID_PREFIXES):
+            bucket = request_shapes
+        else:
+            bucket = other
+        bucket.append(
+            f"- {change.get('operation', '')} {change.get('path', '')}: {change.get('text', '')}"
+        )
+    sections = {
+        "Removed endpoints": removed_endpoints,
+        "Removed fields (a rename shows up as a removal)": removed_fields,
+        "Changed request shapes": request_shapes,
+        "Other breaking changes": other,
+    }
+    return "\n\n".join(
+        f"{title}:\n\n" + "\n".join(items) for title, items in sections.items() if items
+    )
+
+
 def _set_gha_output(**kwargs: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
     with open(path, "a") as f:
         for k, v in kwargs.items():
-            f.write(f"{k}={v}\n")
+            if "\n" in v:
+                # Unguessable, so no line of the value can close the block early.
+                delimiter = f"ghadelimiter_{uuid.uuid4()}"
+                f.write(f"{k}<<{delimiter}\n{v}\n{delimiter}\n")
+            else:
+                f.write(f"{k}={v}\n")
 
 
 def main(baseline_path: str, current_path: str) -> int:
@@ -161,6 +224,7 @@ def main(baseline_path: str, current_path: str) -> int:
     _set_gha_output(
         has_breaking="true",
         is_major_bump="false" if failed else "true",
+        breaking_details=breaking_change_details(breaking.stdout),
     )
 
     if not failed:
@@ -169,6 +233,7 @@ def main(baseline_path: str, current_path: str) -> int:
             f"{route_key_for_version(r, max(current_routes.get(r, {0})))}"
             for r in sorted(affected)
         )
+        _set_gha_output(route_summary=route_summary)
         print(f"Breaking changes detected; route major version bump confirmed: {route_summary}")
 
     return 1 if failed else 0

@@ -4,6 +4,8 @@ Integration tests call the script via subprocess and require oasdiff on PATH.
 Unit tests for pure-Python helpers run without any external tools.
 """
 
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -11,7 +13,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from openapi_version_check import breaking_change_routes, main, route_versions
+from openapi_version_check import (
+    _set_gha_output,
+    breaking_change_details,
+    breaking_change_routes,
+    main,
+    route_versions,
+)
 
 SCRIPT = Path(__file__).parent.parent.parent / "scripts" / "openapi_version_check.py"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -22,13 +30,38 @@ needs_oasdiff = pytest.mark.skipif(
 )
 
 
-def run(baseline: Path, current: Path) -> tuple[int, str]:
+def run(baseline: Path, current: Path, env: dict[str, str] | None = None) -> tuple[int, str]:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), str(baseline), str(current)],
         capture_output=True,
         text=True,
+        env={**os.environ, **(env or {})},
     )
     return result.returncode, result.stdout
+
+
+def read_gha_output(path: Path) -> dict[str, str]:
+    """Parse a GITHUB_OUTPUT file the way the Actions runner does."""
+    outputs: dict[str, str] = {}
+    lines = iter(path.read_text().split("\n"))
+    for line in lines:
+        if not line:
+            continue
+        eq, heredoc = line.find("="), line.find("<<")
+        if eq > 0 and (heredoc < 0 or eq < heredoc):
+            name, value = line.split("=", 1)
+            outputs[name] = value
+            continue
+        name, delimiter = line.split("<<", 1)
+        body: list[str] = []
+        for body_line in lines:
+            if body_line == delimiter:
+                break
+            body.append(body_line)
+        else:
+            raise AssertionError(f"unterminated heredoc for {name}")
+        outputs[name] = "\n".join(body)
+    return outputs
 
 
 class TestRouteVersions:
@@ -116,6 +149,74 @@ class TestBreakingChangeRoutes:
     def test_change_without_path_ignored(self):
         payload = '[{"id": "schema-change", "path": ""}]'
         assert breaking_change_routes(payload) == set()
+
+
+class TestBreakingChangeDetails:
+    def test_groups_changes_by_category(self):
+        payload = json.dumps(
+            [
+                {
+                    "id": "response-property-type-changed",
+                    "operation": "GET",
+                    "path": "/v1/a",
+                    "text": "type changed",
+                },
+                {
+                    "id": "api-path-removed-without-deprecation",
+                    "operation": "GET",
+                    "path": "/v1/b",
+                    "text": "path removed",
+                },
+                {
+                    "id": "new-required-request-property",
+                    "operation": "POST",
+                    "path": "/v1/a",
+                    "text": "new required property",
+                },
+                {
+                    "id": "response-required-property-removed",
+                    "operation": "GET",
+                    "path": "/v1/a",
+                    "text": "property removed",
+                },
+            ]
+        )
+        assert breaking_change_details(payload) == (
+            "Removed endpoints:\n\n"
+            "- GET /v1/b: path removed\n\n"
+            "Removed fields (a rename shows up as a removal):\n\n"
+            "- GET /v1/a: property removed\n\n"
+            "Changed request shapes:\n\n"
+            "- POST /v1/a: new required property\n\n"
+            "Other breaking changes:\n\n"
+            "- GET /v1/a: type changed"
+        )
+
+    def test_omits_empty_categories(self):
+        payload = (
+            '[{"id": "api-removed-before-sunset", "operation": "GET", "path": "/v1/b", '
+            '"text": "removed"}]'
+        )
+        assert breaking_change_details(payload) == "Removed endpoints:\n\n- GET /v1/b: removed"
+
+    def test_invalid_json_returns_empty(self):
+        assert breaking_change_details("not json") == ""
+
+
+class TestSetGhaOutput:
+    def test_multiline_value_survives_runner_parsing(self, tmp_path, monkeypatch):
+        output = tmp_path / "output"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        value = "first\nEOF\nghadelimiter_not-the-real-one\nkey=value\n\nlast"
+        _set_gha_output(single="one line", multi=value)
+        assert read_gha_output(output) == {"single": "one line", "multi": value}
+
+    def test_delimiter_is_unique_per_value(self, tmp_path, monkeypatch):
+        output = tmp_path / "output"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        _set_gha_output(a="1\n2", b="3\n4")
+        headers = [line for line in output.read_text().splitlines() if "<<" in line]
+        assert len({h.split("<<")[1] for h in headers}) == 2
 
 
 class TestOasdiffExitCodeHandling:
@@ -232,3 +333,52 @@ class TestApiVersionScript:
         rc, out = run(FIXTURES / "auth_v1.json", FIXTURES / "api_breaking_v2.json")
         assert rc == 0
         assert "/v1/auth/verify -> /v2/auth/verify" in out
+
+
+@needs_oasdiff
+class TestApiVersionOutputs:
+    def outputs(self, tmp_path: Path, baseline: str, current: str) -> tuple[int, dict[str, str]]:
+        output = tmp_path / "output"
+        output.touch()
+        rc, _ = run(FIXTURES / baseline, FIXTURES / current, {"GITHUB_OUTPUT": str(output)})
+        return rc, read_gha_output(output)
+
+    def test_no_changes_writes_only_flags(self, tmp_path):
+        rc, outputs = self.outputs(tmp_path, "auth_v1.json", "auth_v1.json")
+        assert rc == 0
+        assert outputs == {"has_breaking": "false", "is_major_bump": "false"}
+
+    def test_nonbreaking_writes_only_flags(self, tmp_path):
+        rc, outputs = self.outputs(tmp_path, "auth_v1.json", "api_nonbreaking_v1_1.json")
+        assert rc == 0
+        assert outputs == {"has_breaking": "false", "is_major_bump": "false"}
+
+    def test_major_bump_writes_route_summary_and_categorized_details(self, tmp_path):
+        rc, outputs = self.outputs(tmp_path, "users_v1.json", "users_breaking_v2.json")
+        assert rc == 0
+        assert outputs["has_breaking"] == "true"
+        assert outputs["is_major_bump"] == "true"
+        assert outputs["route_summary"] == (
+            "/v1/auth/verify -> /v2/auth/verify, /v1/users -> /v2/users"
+        )
+        details = outputs["breaking_details"]
+        assert (
+            "Removed endpoints:\n\n- GET /v1/auth/verify: api path removed without deprecation"
+            in details
+        )
+        assert (
+            "Removed fields (a rename shows up as a removal):\n\n"
+            "- GET /v1/users: removed the required property `name` from the response" in details
+        )
+        assert (
+            "Changed request shapes:\n\n"
+            "- POST /v1/users: added the new required request property `email`" in details
+        )
+        assert "Other breaking changes:\n\n- GET /v1/users: the `id` response's property" in details
+
+    def test_breaking_without_bump_writes_details_but_no_route_summary(self, tmp_path):
+        rc, outputs = self.outputs(tmp_path, "auth_v1.json", "api_breaking_no_paths_v2.json")
+        assert rc == 1
+        assert outputs["is_major_bump"] == "false"
+        assert "route_summary" not in outputs
+        assert outputs["breaking_details"].startswith("Removed endpoints:")
