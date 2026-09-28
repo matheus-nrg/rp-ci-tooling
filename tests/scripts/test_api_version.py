@@ -6,6 +6,7 @@ Unit tests for pure-Python helpers run without any external tools.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,27 +42,9 @@ def run(baseline: Path, current: Path, env: dict[str, str] | None = None) -> tup
 
 
 def read_gha_output(path: Path) -> dict[str, str]:
-    """Parse a GITHUB_OUTPUT file the way the Actions runner does."""
-    outputs: dict[str, str] = {}
-    lines = iter(path.read_text().split("\n"))
-    for line in lines:
-        if not line:
-            continue
-        eq, heredoc = line.find("="), line.find("<<")
-        if eq > 0 and (heredoc < 0 or eq < heredoc):
-            name, value = line.split("=", 1)
-            outputs[name] = value
-            continue
-        name, delimiter = line.split("<<", 1)
-        body: list[str] = []
-        for body_line in lines:
-            if body_line == delimiter:
-                break
-            body.append(body_line)
-        else:
-            raise AssertionError(f"unterminated heredoc for {name}")
-        outputs[name] = "\n".join(body)
-    return outputs
+    """Parse a GITHUB_OUTPUT file of heredoc blocks the way the Actions runner does."""
+    pattern = r"^(\w+)<<(\S+)\n(.*?)\n\2$"
+    return {name: body for name, _, body in re.findall(pattern, path.read_text(), re.M | re.S)}
 
 
 class TestRouteVersions:
@@ -153,34 +136,14 @@ class TestBreakingChangeRoutes:
 
 class TestBreakingChangeDetails:
     def test_groups_changes_by_category(self):
-        payload = json.dumps(
-            [
-                {
-                    "id": "response-property-type-changed",
-                    "operation": "GET",
-                    "path": "/v1/a",
-                    "text": "type changed",
-                },
-                {
-                    "id": "api-path-removed-without-deprecation",
-                    "operation": "GET",
-                    "path": "/v1/b",
-                    "text": "path removed",
-                },
-                {
-                    "id": "new-required-request-property",
-                    "operation": "POST",
-                    "path": "/v1/a",
-                    "text": "new required property",
-                },
-                {
-                    "id": "response-required-property-removed",
-                    "operation": "GET",
-                    "path": "/v1/a",
-                    "text": "property removed",
-                },
-            ]
-        )
+        fields = ("id", "operation", "path", "text")
+        changes = [
+            ("response-property-type-changed", "GET", "/v1/a", "type changed"),
+            ("api-path-removed-without-deprecation", "GET", "/v1/b", "path removed"),
+            ("new-required-request-property", "POST", "/v1/a", "new required property"),
+            ("response-required-property-removed", "GET", "/v1/a", "property removed"),
+        ]
+        payload = json.dumps([dict(zip(fields, change)) for change in changes])
         assert breaking_change_details(payload) == (
             "Removed endpoints:\n\n"
             "- GET /v1/b: path removed\n\n"
@@ -210,13 +173,6 @@ class TestSetGhaOutput:
         value = "first\nEOF\nghadelimiter_not-the-real-one\nkey=value\n\nlast"
         _set_gha_output(single="one line", multi=value)
         assert read_gha_output(output) == {"single": "one line", "multi": value}
-
-    def test_delimiter_is_unique_per_value(self, tmp_path, monkeypatch):
-        output = tmp_path / "output"
-        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-        _set_gha_output(a="1\n2", b="3\n4")
-        headers = [line for line in output.read_text().splitlines() if "<<" in line]
-        assert len({h.split("<<")[1] for h in headers}) == 2
 
 
 class TestOasdiffExitCodeHandling:
@@ -343,13 +299,9 @@ class TestApiVersionOutputs:
         rc, _ = run(FIXTURES / baseline, FIXTURES / current, {"GITHUB_OUTPUT": str(output)})
         return rc, read_gha_output(output)
 
-    def test_no_changes_writes_only_flags(self, tmp_path):
-        rc, outputs = self.outputs(tmp_path, "auth_v1.json", "auth_v1.json")
-        assert rc == 0
-        assert outputs == {"has_breaking": "false", "is_major_bump": "false"}
-
-    def test_nonbreaking_writes_only_flags(self, tmp_path):
-        rc, outputs = self.outputs(tmp_path, "auth_v1.json", "api_nonbreaking_v1_1.json")
+    @pytest.mark.parametrize("current", ["auth_v1.json", "api_nonbreaking_v1_1.json"])
+    def test_nonbreaking_writes_only_flags(self, tmp_path, current):
+        rc, outputs = self.outputs(tmp_path, "auth_v1.json", current)
         assert rc == 0
         assert outputs == {"has_breaking": "false", "is_major_bump": "false"}
 

@@ -120,7 +120,7 @@ On every run the workflow checks out the caller repo and this tooling repo, gene
 5. **Concurrent version limit** - blocks the run if the current generated spec contains more than 2 live major versions for any route, or exactly 2 non-consecutive major versions for a route. This check does not need a prod baseline. `override-version-limit` converts this specific violation into a warning.
 6. **PR comments** - on PRs, updates bot comments for new services with no baseline, breaking API changes, and version-limit violations or overrides.
 7. **Baseline publish** - on a successful push to `main`, uploads the generated spec as `sha-${{ github.sha }}` and refreshes `prod-baseline` as a compatibility alias. Future checks prefer the latest `sha-*` baseline.
-8. **Major version bump notice** - when that push ships a route major version bump, posts to `TEAMS_WEBHOOK_URL`: the service, the old and new route versions, oasdiff's breaking changes grouped as removed endpoints, removed fields, changed request shapes and other, and links to the PR (or commit), the published spec and the deprecation policy. oasdiff has no rename check, so a renamed field is listed as a removed one. A failed post never fails the job.
+8. **Major version bump notice** - when that push ships a route major version bump, posts to `TEAMS_WEBHOOK_URL`: the service, the old and new route versions, oasdiff's breaking changes grouped by type, and links to the PR (or commit), the published spec and the deprecation policy.
 
 #### Route versioning rules
 

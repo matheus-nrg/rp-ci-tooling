@@ -1,10 +1,7 @@
 name: Notify Teams
 description: >
-  Best-effort post of a message to a Teams webhook. Plain text is sent as a
-  single-block Adaptive Card; a message that is already a JSON object is sent
-  as-is.
-  An empty webhook URL skips the post, and a failed post only leaves a
-  step-summary note: a notification never fails the calling job.
+  Best-effort post to a Teams webhook. Plain text is sent as an Adaptive Card; a
+  JSON object is sent as-is. Never fails the calling job.
 
 inputs:
   webhook-url:

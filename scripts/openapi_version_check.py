@@ -112,10 +112,13 @@ def breaking_change_details(breaking_json: str) -> str:
     removed (the new name is a non-breaking addition), so renames can only show
     up under removed fields.
     """
-    removed_endpoints: list[str] = []
-    removed_fields: list[str] = []
-    request_shapes: list[str] = []
-    other: list[str] = []
+    sections: dict[str, list[str]] = {
+        "Removed endpoints": [],
+        "Removed fields (a rename shows up as a removal)": [],
+        "Changed request shapes": [],
+        "Other breaking changes": [],
+    }
+    removed_endpoints, removed_fields, request_shapes, other = sections.values()
     for change in _load_changes(breaking_json):
         change_id = change.get("id", "")
         if change_id in _REMOVED_ENDPOINT_IDS:
@@ -129,12 +132,6 @@ def breaking_change_details(breaking_json: str) -> str:
         bucket.append(
             f"- {change.get('operation', '')} {change.get('path', '')}: {change.get('text', '')}"
         )
-    sections = {
-        "Removed endpoints": removed_endpoints,
-        "Removed fields (a rename shows up as a removal)": removed_fields,
-        "Changed request shapes": request_shapes,
-        "Other breaking changes": other,
-    }
     return "\n\n".join(
         f"{title}:\n\n" + "\n".join(items) for title, items in sections.items() if items
     )
@@ -146,12 +143,10 @@ def _set_gha_output(**kwargs: str) -> None:
         return
     with open(path, "a") as f:
         for k, v in kwargs.items():
-            if "\n" in v:
-                # Unguessable, so no line of the value can close the block early.
-                delimiter = f"ghadelimiter_{uuid.uuid4()}"
-                f.write(f"{k}<<{delimiter}\n{v}\n{delimiter}\n")
-            else:
-                f.write(f"{k}={v}\n")
+            # Heredoc form for every value, so multiline ones need no special case;
+            # the unguessable delimiter means no line of a value can close it early.
+            delimiter = f"ghadelimiter_{uuid.uuid4()}"
+            f.write(f"{k}<<{delimiter}\n{v}\n{delimiter}\n")
 
 
 def main(baseline_path: str, current_path: str) -> int:
