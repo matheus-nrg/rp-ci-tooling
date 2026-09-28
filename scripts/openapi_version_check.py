@@ -55,6 +55,7 @@ _REMOVED_FIELD_IDS = {
     "optional-response-header-removed",
 }
 _REQUEST_SHAPE_ID_PREFIXES = ("request-", "new-request-", "new-required-request-")
+_ERR_LEVEL = 3  # oasdiff: 1 INFO, 2 WARN, 3 ERR
 
 
 def versioned_route_key(path_key: str) -> tuple[str, int] | None:
@@ -118,18 +119,20 @@ def breaking_change_details(breaking_json: str) -> str:
         "Changed request shapes": [],
         "Other breaking changes": [],
     }
-    removed_endpoints, removed_fields, request_shapes, other = sections.values()
     for change in _load_changes(breaking_json):
+        # `breaking` also reports WARN-level changes; only ERR ones break a client.
+        if change.get("level", _ERR_LEVEL) < _ERR_LEVEL:
+            continue
         change_id = change.get("id", "")
         if change_id in _REMOVED_ENDPOINT_IDS:
-            bucket = removed_endpoints
+            title = "Removed endpoints"
         elif change_id in _REMOVED_FIELD_IDS:
-            bucket = removed_fields
+            title = "Removed fields (a rename shows up as a removal)"
         elif change_id.startswith(_REQUEST_SHAPE_ID_PREFIXES):
-            bucket = request_shapes
+            title = "Changed request shapes"
         else:
-            bucket = other
-        bucket.append(
+            title = "Other breaking changes"
+        sections[title].append(
             f"- {change.get('operation', '')} {change.get('path', '')}: {change.get('text', '')}"
         )
     return "\n\n".join(

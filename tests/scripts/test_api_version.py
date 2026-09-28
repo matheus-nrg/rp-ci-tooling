@@ -155,6 +155,21 @@ class TestBreakingChangeDetails:
             "- GET /v1/a: type changed"
         )
 
+    def test_drops_warn_level_changes(self):
+        payload = json.dumps(
+            [
+                {"id": "response-optional-property-removed", "level": 2, "path": "/v1/a"},
+                {
+                    "id": "api-removed-before-sunset",
+                    "level": 3,
+                    "operation": "GET",
+                    "path": "/v1/b",
+                    "text": "removed",
+                },
+            ]
+        )
+        assert breaking_change_details(payload) == "Removed endpoints:\n\n- GET /v1/b: removed"
+
     def test_omits_empty_categories(self):
         payload = (
             '[{"id": "api-removed-before-sunset", "operation": "GET", "path": "/v1/b", '

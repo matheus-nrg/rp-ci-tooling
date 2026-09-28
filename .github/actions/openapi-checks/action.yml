@@ -396,7 +396,7 @@ runs:
         fi
 
         MESSAGE=$(printf '%s\n\n' \
-          "**${SERVICE}: route major version bump shipped to prod**" \
+          "**${SERVICE}: route major version bump merged to main**" \
           "New route versions: ${ROUTE_SUMMARY}" \
           "Breaking changes:" \
           "$BREAKING_DETAILS" \
