@@ -6,7 +6,8 @@ description: >
 inputs:
   webhook-url:
     description: "Teams incoming webhook URL. Empty skips the notification."
-    required: true
+    required: false
+    default: ""
   message:
     description: "Plain text, or a complete JSON object payload"
     required: true

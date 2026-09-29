@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
     secrets:
-      TEAMS_WEBHOOK_URL:
+      TEAMS_API_BREAKING_WEBHOOK_URL:
         description: >
           Teams incoming webhook URL, used only to announce a route major
           version bump once it ships to main. Optional - skipped with a
@@ -91,4 +91,4 @@ jobs:
           workload-identity-provider: ${{ inputs.workload-identity-provider }}
           service-account: ${{ inputs.service-account }}
           gar-project: ${{ inputs.gar-project }}
-          teams-webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          teams-webhook-url: ${{ secrets.TEAMS_API_BREAKING_WEBHOOK_URL }}

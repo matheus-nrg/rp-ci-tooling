@@ -2,6 +2,9 @@
 # Kept as a file rather than inline in action.yml so openapi-checks can run it
 # through its own action path: a `uses: ./...` inside a composite resolves
 # against the caller's workspace, not this repo.
+#
+# No `set -e`/`-u`/`pipefail` on purpose: a notification is best-effort and must
+# never fail the calling job.
 
 if [ -z "$WEBHOOK_URL" ]; then
   echo "No Teams webhook URL set - notification skipped." >> "$GITHUB_STEP_SUMMARY"
@@ -32,4 +35,7 @@ fi
 curl -sSf --max-time 30 -X POST "$WEBHOOK_URL" \
   -H "Content-Type: application/json" \
   -d "$payload" \
-  || echo "Teams notification failed - see the run log." >> "$GITHUB_STEP_SUMMARY"
+  || {
+    echo "::warning::Teams notification failed"
+    echo "Teams notification failed - see the run log." >> "$GITHUB_STEP_SUMMARY"
+  }
