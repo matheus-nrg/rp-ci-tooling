@@ -24,7 +24,7 @@ When running inside GitHub Actions, writes these step outputs to GITHUB_OUTPUT:
                   only when is_major_bump is "true"
   breaking_details - multiline list of oasdiff's breaking changes grouped into
                   removed endpoints, removed fields, changed request shapes and
-                  other, set whenever has_breaking is "true"
+                  other, capped at about 20 KB, set whenever has_breaking is "true"
 
 Usage:
     python3 openapi_version_check.py <baseline-spec> <current-spec>
@@ -56,6 +56,9 @@ _REMOVED_FIELD_IDS = {
 }
 _REQUEST_SHAPE_ID_PREFIXES = ("request-", "new-request-", "new-required-request-")
 _ERR_LEVEL = 3  # oasdiff: 1 INFO, 2 WARN, 3 ERR
+# Teams rejects webhook payloads over 28 KB, and a rejected post only leaves a
+# step-summary line. 20 KB leaves room for the rest of the card and JSON escaping.
+_DETAILS_MAX_BYTES = 20_000
 
 
 def versioned_route_key(path_key: str) -> tuple[str, int] | None:
@@ -106,8 +109,10 @@ def breaking_change_routes(breaking_json: str) -> set[str]:
     return routes
 
 
-def breaking_change_details(breaking_json: str) -> str:
+def breaking_change_details(breaking_json: str, max_bytes: int = _DETAILS_MAX_BYTES) -> str:
     """Group oasdiff breaking changes into a markdown list per category.
+
+    Items past max_bytes are dropped and counted in a closing "... N more" line.
 
     oasdiff has no rename check: a renamed property is reported as the old name
     removed (the new name is a non-breaking addition), so renames can only show
@@ -135,9 +140,23 @@ def breaking_change_details(breaking_json: str) -> str:
         sections[title].append(
             f"- {change.get('operation', '')} {change.get('path', '')}: {change.get('text', '')}"
         )
-    return "\n\n".join(
-        f"{title}:\n\n" + "\n".join(items) for title, items in sections.items() if items
-    )
+
+    blocks: list[str] = []
+    size = omitted = 0
+    for title, items in sections.items():
+        kept: list[str] = []
+        for item in items:
+            added = len(item.encode()) + (0 if kept else len(title.encode()) + 4)
+            if omitted or size + added > max_bytes:
+                omitted += 1
+                continue
+            kept.append(item)
+            size += added + 1
+        if kept:
+            blocks.append(f"{title}:\n\n" + "\n".join(kept))
+    if omitted:
+        blocks.append(f"... {omitted} more, see the spec artifact.")
+    return "\n\n".join(blocks)
 
 
 def _set_gha_output(**kwargs: str) -> None:

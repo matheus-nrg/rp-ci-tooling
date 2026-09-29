@@ -180,6 +180,41 @@ class TestBreakingChangeDetails:
     def test_invalid_json_returns_empty(self):
         assert breaking_change_details("not json") == ""
 
+    def test_caps_size_and_counts_the_rest(self):
+        payload = json.dumps(
+            [
+                {
+                    "id": "api-removed-before-sunset",
+                    "operation": "GET",
+                    "path": f"/v1/r{i}",
+                    "text": "removed",
+                }
+                for i in range(5)
+            ]
+        )
+        assert breaking_change_details(payload, max_bytes=80) == (
+            "Removed endpoints:\n\n"
+            "- GET /v1/r0: removed\n"
+            "- GET /v1/r1: removed\n\n"
+            "... 3 more, see the spec artifact."
+        )
+
+    def test_real_output_stays_under_the_teams_limit(self):
+        payload = json.dumps(
+            [
+                {
+                    "id": "response-required-property-removed",
+                    "operation": "GET",
+                    "path": f"/v1/resource/{i}",
+                    "text": "removed the required property 'data/items/field' " * 3,
+                }
+                for i in range(2000)
+            ]
+        )
+        details = breaking_change_details(payload)
+        assert len(details.encode()) < 20_500
+        assert details.endswith("more, see the spec artifact.")
+
 
 class TestSetGhaOutput:
     def test_multiline_value_survives_runner_parsing(self, tmp_path, monkeypatch):
